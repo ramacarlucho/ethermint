@@ -69,23 +69,23 @@ type filter struct {
 // PublicFilterAPI offers support to create and manage filters. This will allow external clients to retrieve various
 // information related to the Ethereum protocol such as blocks, transactions and logs.
 type PublicFilterAPI struct {
-	logger    log.Logger
-	clientCtx client.Context
-	backend   Backend
-	events    *EventSystem
-	filtersMu sync.Mutex
-	filters   map[rpc.ID]*filter
+	logger       log.Logger
+	clientCtx    client.Context
+	events       *EventSystem
+	filterSystem *FilterSystem
+	filtersMu    sync.Mutex
+	filters      map[rpc.ID]*filter
 }
 
 // NewPublicAPI returns a new PublicFilterAPI instance.
 func NewPublicAPI(logger log.Logger, clientCtx client.Context, tmWSClient *rpcclient.WSClient, backend Backend) *PublicFilterAPI {
 	logger = logger.With("api", "filter")
 	api := &PublicFilterAPI{
-		logger:    logger,
-		clientCtx: clientCtx,
-		backend:   backend,
-		filters:   make(map[rpc.ID]*filter),
-		events:    NewEventSystem(logger, tmWSClient),
+		logger:       logger,
+		clientCtx:    clientCtx,
+		filters:      make(map[rpc.ID]*filter),
+		events:       NewEventSystem(logger, tmWSClient),
+		filterSystem: NewFilterSystem(backend, Config{}),
 	}
 
 	go api.timeoutLoop()
@@ -126,7 +126,7 @@ func (api *PublicFilterAPI) NewPendingTransactionFilter() rpc.ID {
 	api.filtersMu.Lock()
 	defer api.filtersMu.Unlock()
 
-	if len(api.filters) >= int(api.backend.RPCFilterCap()) {
+	if len(api.filters) >= int(api.filterSystem.backend.RPCFilterCap()) {
 		return rpc.ID("error creating pending tx filter: max limit reached")
 	}
 
@@ -261,7 +261,7 @@ func (api *PublicFilterAPI) NewBlockFilter() rpc.ID {
 	api.filtersMu.Lock()
 	defer api.filtersMu.Unlock()
 
-	if len(api.filters) >= int(api.backend.RPCFilterCap()) {
+	if len(api.filters) >= int(api.filterSystem.backend.RPCFilterCap()) {
 		return rpc.ID("error creating block filter: max limit reached")
 	}
 
@@ -444,7 +444,7 @@ func (api *PublicFilterAPI) NewFilter(criteria filters.FilterCriteria) (rpc.ID, 
 	api.filtersMu.Lock()
 	defer api.filtersMu.Unlock()
 
-	if len(api.filters) >= int(api.backend.RPCFilterCap()) {
+	if len(api.filters) >= int(api.filterSystem.backend.RPCFilterCap()) {
 		return rpc.ID(""), fmt.Errorf("error creating filter: max limit reached")
 	}
 
@@ -518,7 +518,7 @@ func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit filters.FilterCrit
 	var filter *Filter
 	if crit.BlockHash != nil {
 		// Block filter requested, construct a single-shot filter
-		filter = NewBlockFilter(api.logger, api.backend, crit)
+		filter = api.filterSystem.NewBlockFilter(api.logger, crit)
 	} else {
 		// Convert the RPC block numbers into internal representations
 		begin := rpc.LatestBlockNumber.Int64()
@@ -530,11 +530,11 @@ func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit filters.FilterCrit
 			end = crit.ToBlock.Int64()
 		}
 		// Construct the range filter
-		filter = NewRangeFilter(api.logger, api.backend, begin, end, crit.Addresses, crit.Topics)
+		filter = api.filterSystem.NewRangeFilter(api.logger, begin, end, crit.Addresses, crit.Topics)
 	}
 
 	// Run the filter and return all the logs
-	logs, err := filter.Logs(ctx, int(api.backend.RPCLogsCap()), int64(api.backend.RPCBlockRangeCap()))
+	logs, err := filter.Logs(ctx, int(api.filterSystem.backend.RPCLogsCap()), int64(api.filterSystem.backend.RPCBlockRangeCap()))
 	if err != nil {
 		return nil, err
 	}
@@ -580,7 +580,7 @@ func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*et
 	var filter *Filter
 	if f.crit.BlockHash != nil {
 		// Block filter requested, construct a single-shot filter
-		filter = NewBlockFilter(api.logger, api.backend, f.crit)
+		filter = api.filterSystem.NewBlockFilter(api.logger, f.crit)
 	} else {
 		// Convert the RPC block numbers into internal representations
 		begin := rpc.LatestBlockNumber.Int64()
@@ -592,10 +592,10 @@ func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*et
 			end = f.crit.ToBlock.Int64()
 		}
 		// Construct the range filter
-		filter = NewRangeFilter(api.logger, api.backend, begin, end, f.crit.Addresses, f.crit.Topics)
+		filter = api.filterSystem.NewRangeFilter(api.logger, begin, end, f.crit.Addresses, f.crit.Topics)
 	}
 	// Run the filter and return all the logs
-	logs, err := filter.Logs(ctx, int(api.backend.RPCLogsCap()), int64(api.backend.RPCBlockRangeCap()))
+	logs, err := filter.Logs(ctx, int(api.filterSystem.backend.RPCLogsCap()), int64(api.filterSystem.backend.RPCBlockRangeCap()))
 	if err != nil {
 		return nil, err
 	}

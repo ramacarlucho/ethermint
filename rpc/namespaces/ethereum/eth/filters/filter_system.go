@@ -24,6 +24,7 @@ import (
 
 	"github.com/evmos/ethermint/rpc/ethereum/pubsub"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
+	lru "github.com/hashicorp/golang-lru"
 )
 
 var (
@@ -35,6 +36,62 @@ var (
 		sdk.AttributeKeyModule, evmtypes.ModuleName)).String()
 	headerEvents = tmtypes.QueryForEvent(tmtypes.EventNewBlockHeader).String()
 )
+
+// Config represents the configuration of the filter system.
+type Config struct {
+	LogCacheSize int           // maximum number of cached blocks (default: 32)
+	Timeout      time.Duration // how long filters stay active (default: 5min)
+}
+
+func (cfg Config) withDefaults() Config {
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 5 * time.Minute
+	}
+	if cfg.LogCacheSize == 0 {
+		cfg.LogCacheSize = 32
+	}
+	return cfg
+}
+
+// FilterSystem holds resources shared by all filters.
+type FilterSystem struct {
+	backend   Backend
+	logsCache *lru.Cache
+	cfg       *Config
+}
+
+// NewFilterSystem creates a filter system.
+func NewFilterSystem(backend Backend, config Config) *FilterSystem {
+	config = config.withDefaults()
+
+	cache, err := lru.New(config.LogCacheSize)
+	if err != nil {
+		panic(err)
+	}
+	return &FilterSystem{
+		backend:   backend,
+		logsCache: cache,
+		cfg:       &config,
+	}
+}
+
+// cachedGetLogs loads block logs from the backend and caches the result.
+func (sys *FilterSystem) cachedGetLogs(ctx context.Context, blockHash common.Hash, number uint64) ([][]*ethtypes.Log, error) {
+	cached, ok := sys.logsCache.Get(blockHash)
+	if ok {
+		return cached.([][]*ethtypes.Log), nil
+	}
+
+	logs, err := sys.backend.GetLogs(blockHash)
+	if err != nil {
+		return nil, err
+	}
+	if logs == nil {
+		return nil, fmt.Errorf("failed to get logs for block #%d (0x%s)", number, blockHash.TerminalString())
+	}
+	sys.logsCache.Add(blockHash, logs)
+	return logs, nil
+}
 
 // EventSystem creates subscriptions, processes events and broadcasts them to the
 // subscription which match the subscription criteria using the Tendermint's RPC client.
