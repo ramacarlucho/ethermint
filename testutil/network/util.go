@@ -209,6 +209,8 @@ func initGenFiles(cfg Config, genAccounts []authtypes.GenesisAccount, genBalance
 	cfg.GenesisState[stakingtypes.ModuleName] = cfg.Codec.MustMarshalJSON(&stakingGenState)
 
 	var govGenState govv1.GenesisState
+	govGenState.DepositParams.MaxDepositPeriod = time.Second * 30
+	govGenState.VotingParams.VotingPeriod = time.Second * 30
 	cfg.Codec.MustUnmarshalJSON(cfg.GenesisState[govtypes.ModuleName], &govGenState)
 
 	govGenState.DepositParams.MinDeposit[0].Denom = cfg.BondDenom
